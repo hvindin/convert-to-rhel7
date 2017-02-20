@@ -1,0 +1,134 @@
+---
+- name: download redhat-release-server and related packages in tar.xz
+  get_url:
+    url: https://rhel.home-v.ind.in/convert.tar.xz
+    dest: /tmp/convert.tar.xz
+    checksum: sha256:9feb3ff6c18a0c9c0c13fec64155f53917b271414c0323b0c1f102c3441319f0
+
+- name: create /tmp/convert directory
+  file:
+    state: directory
+    path: /tmp/convert
+
+- name: extract convert.tar.xz
+  unarchive:
+    remote_src: yes
+    src: /tmp/convert.tar.xz
+    dest: /tmp/convert
+
+- name: register centos-release
+  shell: "/usr/bin/rpm -q centos-release"
+  args:
+    warn: no
+  changed_when: no
+  ignore_errors: yes
+  failed_when: no
+  register: centos_release
+
+- name: register centos-logos
+  shell: "/usr/bin/rpm -q centos-logos"
+  args:
+    warn: no
+  ignore_errors: yes
+  changed_when: no
+  failed_when: no
+  register: centos_logos
+
+- name: use command to remove centos-release
+  command: "/usr/bin/rpm -e --nodeps centos-release"
+  args:
+    warn: no
+  when: centos_release is defined and centos_release.rc == 0
+
+- name: use command to remove centos-logos
+  command: "/usr/bin/rpm -e --nodeps centos-logos"
+  args:
+    warn: no
+  when: centos_logos is defined and centos_logos.rc == 0
+
+- name: install all the rpms we just extracted
+  yum:
+    name: "{{ item }}"
+    state: present
+  with_items:
+    - /tmp/convert/libnl-1.1.4-3.el7.x86_64.rpm
+    - /tmp/convert/libxml2-python-2.9.1-6.el7_2.3.x86_64.rpm
+    - /tmp/convert/m2crypto-0.21.1-17.el7.x86_64.rpm
+    - /tmp/convert/pygobject2-2.28.6-11.el7.x86_64.rpm
+    - /tmp/convert/pyOpenSSL-0.13.1-3.el7.x86_64.rpm
+    - /tmp/convert/python-dateutil-1.5-7.el7.noarch.rpm
+    - /tmp/convert/python-dmidecode-3.10.13-11.el7.x86_64.rpm
+    - /tmp/convert/python-ethtool-0.8-5.el7.x86_64.rpm
+    - /tmp/convert/python-gudev-147.2-7.el7.x86_64.rpm
+    - /tmp/convert/python-hwdata-1.7.3-4.el7.noarch.rpm
+    - /tmp/convert/python-rhsm-1.17.9-1.el7.x86_64.rpm
+    - /tmp/convert/python-rhsm-certificates-1.17.9-1.el7.x86_64.rpm
+    - /tmp/convert/redhat-release-server-7.3-7.el7.x86_64.rpm
+    - /tmp/convert/rhn-check-2.0.2-8.el7.noarch.rpm
+    - /tmp/convert/rhn-client-tools-2.0.2-8.el7.noarch.rpm
+    - /tmp/convert/rhnlib-2.5.65-2.el7.noarch.rpm
+    - /tmp/convert/rhnsd-5.0.13-5.el7.x86_64.rpm
+    - /tmp/convert/rhn-setup-2.0.2-8.el7.noarch.rpm
+    - /tmp/convert/subscription-manager-1.17.15-1.el7.x86_64.rpm
+    - /tmp/convert/yum-rhn-plugin-2.0.1-6.el7.noarch.rpm
+
+- name: register with redhat network
+  redhat_subscription:
+    state: present
+    username: "{{ redhat_username }}"
+    password: "{{ redhat_password }}"
+    autosubscribe: true
+
+- name: set release to  7Server
+  command: "/usr/bin/subscription-manager release --set=7Server"
+  args:
+    warn: no
+  changed_when: no
+
+- name: get enabled repos
+  shell: "/usr/bin/subscription-manager repos --list-enabled | grep 'Repo ID:' | grep -v -E \"(rhel-7-server-rpms|rhel-7-server-optional-rpms)\" | awk '{print$3}'"
+  args:
+    warn: no
+  changed_when: no
+  register: enabled_repos
+
+- name: disable repos which aren't rhel-7-server-rpms and rhel-7-server-optional-rpms
+  command: "/usr/bin/subscription-manager repos --disable={{ item }}"
+  args:
+    warn: no
+  with_items: "{{ enabled_repos.stdout_lines }}"
+  when: enabled_repos is defined
+
+- name: install redhat-logos
+  yum:
+    name: redhat-logos
+    state: present
+
+- name: distro sync
+  command: "/usr/bin/yum distro-sync -y &> /root/distro_sync.log"
+  args:
+    warn: no
+    creates: /root/distro_sync.log
+
+- name: reinstall everything
+  shell: "yum reinstall $(yum list installed | awk '{print$1}' | grep -v -E '^(@|[0-9])') -y &> /root/reinstall.log"
+  args:
+    warn: no
+    creates: /root/reinstall.log
+
+- name: reboot the machine
+  shell: "/usr/bin/sleep 2 && /usr/bin/systemctl reboot"
+  async: 1
+  poll: 0
+  ignore_errors: yes
+
+- name: waiting for server to reboot
+  wait_for:
+    host: "{{ ansible_ssh_host | default(inventory_hostname) }}"
+    port: "{{ ansible_ssh_port | default(22) }}"
+    search_regex: OpenSSH
+    delay: 5
+    timeout: 300
+  connection: local
+  become: no
+...
